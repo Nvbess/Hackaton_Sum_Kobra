@@ -1,43 +1,61 @@
+import streamlit
 from dotenv import load_dotenv
 from langchain.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chat_models import AzureChatOpenAI
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
-from langchain.indexes import VectorstoreIndexCreator
 from langchain.memory import ConversationBufferMemory
-from langchain.llms import OpenAI
+
+import os
+
+streamlit.title('Profesor AI')
 
 load_dotenv()
 
-# Ingreso del PDF
-pdf_loader = PyPDFLoader('./docs/CV_Infografico.pdf')
-data = pdf_loader.load()
+if __name__ == '__main__':
+    try:
+        llm = AzureChatOpenAI(
+            temperature=0.2,
+            deployment_name="kobra_chat35",
+            model_name="gpt-35-turbo"
+        )
+        embeddings = OpenAIEmbeddings(
+            deployment="kobra_emb",
+            model="text-embedding-ada-002",
+        )
+        documents_pdf = []
+        for file in os.listdir("docs"):
+            if file.endswith(".pdf"):
+                pdf_path = "./docs/" + file
+                pdf_loader = PyPDFLoader(pdf_path)
+                documents_pdf.extend(pdf_loader.load())
 
-#   Transformacion
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size = 1000,
-    chunk_overlap  = 0
-)
-texts = text_splitter.split_documents(data)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=100000,
+            chunk_overlap=0
+        )
+        documents = text_splitter.split_documents(documents_pdf)
 
-#   Transformamos los chunks en vectores.
+        #db = Chroma(persist_directory="data\\",embedding_function=embeddings)
+        db = Chroma.from_documents(documents, embeddings, persist_directory='data\\')
+        db.persist()
+        retriever = db.as_retriever()
 
-embeddings_model = OpenAIEmbeddings()
+        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-db = Chroma.from_documents(texts, embeddings_model)
-retriever = db.as_retriever()
+        qa = RetrievalQA.from_chain_type(llm=llm, memory=ConversationBufferMemory(), chain_type="stuff",
+                                         retriever=retriever, input_key="question", verbose=True)
 
-index = VectorstoreIndexCreator(vectorstore_kwargs={"persist_directory":"./data_save"}).from_loaders([pdf_loader])
+        chat_history = []
+        while True:
+            query = streamlit.text_input("Que deseas preguntar? : ","Hola")
+            if query == "salir" or query == "quit" or query == "q":
+                print('Ha salido del sistema!')
+                exit()
+            result = qa({'question': query})
+            streamlit.write(result['result'])
 
-qa = RetrievalQA.from_chain_type(llm=OpenAI(), memory=ConversationBufferMemory(),chain_type="stuff", retriever=index.vectorstore.as_retriever(), input_key="question", verbose=True)
-
-# Generacion de consulta en consola
-
-while True:
-    query = input("Que deseas preguntar? : ")
-    if query == "salir" or query == "quit" or query == "q":
-        print('Ha salido del sistema!')
-        exit()
-    response = qa({"question": query})
-    print(response['result'])
+    except Exception as e:
+        print("No fue posible ejecutar el proceso: {}".format(e))
